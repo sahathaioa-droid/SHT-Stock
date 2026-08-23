@@ -3,14 +3,8 @@ services:
     name: stockpilot
     runtime: node
     plan: free
-    buildCommand: ""
+    buildCommand: "npm install"
     startCommand: node server.js
     envVars:
       - key: NODE_VERSION
         value: 18
-      - key: GOOGLE_SHEETS_ID
-        value: "1-50V89E01CsjlXNyOnqtJhwEkX6kDWVE1zc8wdOHVMQ"
-      - key: GOOGLE_SA_EMAIL
-        value: "sht-222@my-project-sht.iam.gserviceaccount.com"
-      - key: GOOGLE_SA_JSON
-        sync: false
