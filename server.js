@@ -1,23 +1,12 @@
-'use strict';
+﻿'use strict';
 const http = require('http');
-const https = require('https');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const admin = require('firebase-admin');
 
 const ROOT = __dirname;
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const MAX_BODY = 20 * 1024 * 1024;
-
-let SA_EMAIL = '';
-let SA_KEY = '';
-const SHEETS_ID = process.env.GOOGLE_SHEETS_ID || '';
-try {
-  const saJson = JSON.parse(process.env.GOOGLE_SA_JSON || '{}');
-  SA_EMAIL = saJson.client_email || '';
-  SA_KEY = saJson.private_key || '';
-} catch (e) { /* ignore */ }
-const USE_SHEETS = !!(SHEETS_ID && SA_EMAIL && SA_KEY);
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -33,8 +22,95 @@ const MIME = {
   '.woff': 'font/woff'
 };
 
+let db = null;
+let USE_FIREBASE = false;
+
+try {
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SA_JSON || '{}');
+  if (serviceAccount.project_id && process.env.FIREBASE_DB_URL) {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+      databaseURL: process.env.FIREBASE_DB_URL
+    });
+    db = admin.database();
+    USE_FIREBASE = true;
+    console.log('Firebase Realtime Database connected');
+  }
+} catch (e) {
+  console.log('Firebase not configured, using local file storage');
+}
+
+const DB_PREFIX = 'stockpilot_';
+
+function firebaseGet(key, cb) {
+  if (!db) return cb(null, null);
+  db.ref(DB_PREFIX + key).once('value')
+    .then(function (snap) { cb(null, snap.val()); })
+    .catch(function (err) { cb(err); });
+}
+
+function firebaseSet(key, value, cb) {
+  if (!db) return cb(null);
+  db.ref(DB_PREFIX + key).set(value)
+    .then(function () { cb(null); })
+    .catch(function (err) { cb(err); });
+}
+
+function firebaseDelete(key, cb) {
+  if (!db) return cb(null);
+  db.ref(DB_PREFIX + key).remove()
+    .then(function () { cb(null); })
+    .catch(function (err) { cb(err); });
+}
+
+function firebaseGetAll(cb) {
+  if (!db) return cb(null, {});
+  db.ref().once('value')
+    .then(function (snap) {
+      var data = snap.val() || {};
+      var filtered = {};
+      for (var k in data) {
+        if (k.indexOf(DB_PREFIX) === 0) {
+          filtered[k.substring(DB_PREFIX.length)] = data[k];
+        }
+      }
+      cb(null, filtered);
+    })
+    .catch(function (err) { cb(err); });
+}
+
+function firebaseSetAll(obj, cb) {
+  if (!db) return cb(null);
+  var updates = {};
+  for (var k in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) {
+      updates[DB_PREFIX + k] = obj[k];
+    }
+  }
+  db.ref().update(updates)
+    .then(function () { cb(null); })
+    .catch(function (err) { cb(err); });
+}
+
+function firebaseDeleteAll(cb) {
+  if (!db) return cb(null);
+  db.ref().once('value')
+    .then(function (snap) {
+      var data = snap.val() || {};
+      var updates = {};
+      for (var k in data) {
+        if (k.indexOf(DB_PREFIX) === 0) {
+          updates[k] = null;
+        }
+      }
+      return db.ref().update(updates);
+    })
+    .then(function () { cb(null); })
+    .catch(function (err) { cb(err); });
+}
+
 let store = {};
-if (!USE_SHEETS) {
+if (!USE_FIREBASE) {
   try {
     var df = path.join(ROOT, 'data', 'db.json');
     if (fs.existsSync(df)) store = JSON.parse(fs.readFileSync(df, 'utf8'));
@@ -43,7 +119,7 @@ if (!USE_SHEETS) {
 
 let writeQueue = Promise.resolve();
 function persist() {
-  if (USE_SHEETS) return;
+  if (USE_FIREBASE) return;
   var DATA_DIR = path.join(ROOT, 'data');
   var DATA_FILE = path.join(DATA_DIR, 'db.json');
   writeQueue = writeQueue.then(function () {
@@ -58,134 +134,6 @@ function persist() {
       });
     });
   }).catch(function (e) { console.error('Save failed:', e && e.message); });
-}
-
-function b64url(data) { return Buffer.from(typeof data === 'string' ? data : JSON.stringify(data)).toString('base64url'); }
-
-let cachedToken = null;
-let tokenExpiry = 0;
-
-function getAccessToken(cb) {
-  var now = Date.now();
-  if (cachedToken && now < tokenExpiry - 60000) return cb(null, cachedToken);
-
-  var header = b64url({ alg: 'RS256', typ: 'JWT' });
-  var payload = b64url({
-    iss: SA_EMAIL,
-    scope: 'https://www.googleapis.com/auth/spreadsheets',
-    aud: 'https://oauth2.googleapis.com/token',
-    exp: Math.floor(now / 1000) + 3600,
-    iat: Math.floor(now / 1000)
-  });
-  var unsigned = header + '.' + payload;
-  var sign = crypto.createSign('RSA-SHA256');
-  sign.update(unsigned);
-  var sig = sign.sign(SA_KEY, 'base64url');
-  var jwt = unsigned + '.' + sig;
-
-  var body = 'grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=' + encodeURIComponent(jwt);
-  var opts = {
-    hostname: 'oauth2.googleapis.com', port: 443, path: '/token', method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
-  };
-  var req = https.request(opts, function (res) {
-    var chunks = [];
-    res.on('data', function (c) { chunks.push(c); });
-    res.on('end', function () {
-      try {
-        var data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        if (data.access_token) {
-          cachedToken = data.access_token;
-          tokenExpiry = now + (data.expires_in || 3600) * 1000;
-          cb(null, cachedToken);
-        } else {
-          cb(new Error('Token error: ' + JSON.stringify(data)));
-        }
-      } catch (e) { cb(e); }
-    });
-  });
-  req.on('error', cb);
-  req.write(body);
-  req.end();
-}
-
-function sheetsRequest(method, apiPath, body, cb) {
-  getAccessToken(function (err, token) {
-    if (err) return cb(err);
-    var opts = {
-      hostname: 'sheets.googleapis.com', port: 443,
-      path: '/v4/spreadsheets/' + SHEETS_ID + apiPath, method: method,
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }
-    };
-    var req = https.request(opts, function (res) {
-      var chunks = [];
-      res.on('data', function (c) { chunks.push(c); });
-      res.on('end', function () {
-        var text = Buffer.concat(chunks).toString('utf8');
-        if (res.statusCode < 200 || res.statusCode >= 300) {
-          return cb(new Error('Sheets ' + res.statusCode + ': ' + text));
-        }
-        try { cb(null, JSON.parse(text)); } catch (e) { cb(null, text); }
-      });
-    });
-    req.on('error', cb);
-    if (body != null) req.write(typeof body === 'string' ? body : JSON.stringify(body));
-    req.end();
-  });
-}
-
-function sheetsGetAll(cb) {
-  sheetsRequest('GET', '/values/store!A:B?majorDimension=ROWS', null, function (err, data) {
-    if (err) return cb(err);
-    var obj = {};
-    var rows = (data && data.values) ? data.values : [];
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i] && rows[i].length >= 2 && rows[i][0]) {
-        obj[rows[i][0]] = rows[i][1] || '';
-      }
-    }
-    cb(null, obj);
-  });
-}
-
-function sheetsGet(key, cb) {
-  sheetsGetAll(function (err, obj) {
-    if (err) return cb(err);
-    cb(null, Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : null);
-  });
-}
-
-function sheetsSet(key, value, cb) {
-  sheetsGetAll(function (err, obj) {
-    if (err) return cb(err);
-    obj[key] = String(value);
-    sheetsWriteAll(obj, cb);
-  });
-}
-
-function sheetsDelete(key, cb) {
-  sheetsGetAll(function (err, obj) {
-    if (err) return cb(err);
-    delete obj[key];
-    sheetsWriteAll(obj, cb);
-  });
-}
-
-function sheetsWriteAll(obj, cb) {
-  var rows = [];
-  var keys = Object.keys(obj);
-  for (var i = 0; i < keys.length; i++) {
-    rows.push([keys[i], String(obj[keys[i]])]);
-  }
-  sheetsRequest('PUT', '/values/store!A:B?valueInputOption=USER_ENTERED', { values: rows }, function (err) {
-    if (cb) cb(err);
-  });
-}
-
-function sheetsDeleteAll(cb) {
-  sheetsRequest('PUT', '/values/store!A:B?valueInputOption=USER_ENTERED', { values: [] }, function (err) {
-    if (cb) cb(err);
-  });
 }
 
 function sendJSON(res, status, obj) {
@@ -260,15 +208,15 @@ const server = http.createServer(function (req, res) {
     return res.end();
   }
 
-  if (pathname === '/api/ping') { return sendJSON(res, 200, { ok: true, storage: USE_SHEETS ? 'google-sheets' : 'file' }); }
+  if (pathname === '/api/ping') { return sendJSON(res, 200, { ok: true, storage: USE_FIREBASE ? 'firebase' : 'file' }); }
 
   if (pathname.indexOf('/api/') === 0) {
     var mKey = pathname.match(/^\/api\/db\/([^/]+)$/);
 
     if (method === 'GET' && pathname === '/api/db') {
-      if (USE_SHEETS) {
-        return sheetsGetAll(function (err, obj) {
-          if (err) return sendJSON(res, 500, { error: 'sheets read failed' });
+      if (USE_FIREBASE) {
+        return firebaseGetAll(function (err, obj) {
+          if (err) return sendJSON(res, 500, { error: 'firebase read failed' });
           sendJSON(res, 200, obj);
         });
       }
@@ -284,9 +232,9 @@ const server = http.createServer(function (req, res) {
           for (var k in obj) {
             if (Object.prototype.hasOwnProperty.call(obj, k)) next[k] = String(obj[k]);
           }
-          if (USE_SHEETS) {
-            return sheetsWriteAll(next, function (err) {
-              if (err) return sendJSON(res, 500, { error: 'sheets write failed' });
+          if (USE_FIREBASE) {
+            return firebaseSetAll(next, function (err) {
+              if (err) return sendJSON(res, 500, { error: 'firebase write failed' });
               sendJSON(res, 200, { ok: true, count: Object.keys(next).length });
             });
           }
@@ -300,9 +248,9 @@ const server = http.createServer(function (req, res) {
     }
 
     if (method === 'DELETE' && pathname === '/api/db') {
-      if (USE_SHEETS) {
-        return sheetsDeleteAll(function (err) {
-          if (err) return sendJSON(res, 500, { error: 'sheets delete failed' });
+      if (USE_FIREBASE) {
+        return firebaseDeleteAll(function (err) {
+          if (err) return sendJSON(res, 500, { error: 'firebase delete failed' });
           sendJSON(res, 200, { ok: true });
         });
       }
@@ -313,9 +261,9 @@ const server = http.createServer(function (req, res) {
 
     if (method === 'GET' && mKey) {
       var k1 = mKey[1];
-      if (USE_SHEETS) {
-        return sheetsGet(k1, function (err, val) {
-          if (err) return sendJSON(res, 500, { error: 'sheets read failed' });
+      if (USE_FIREBASE) {
+        return firebaseGet(k1, function (err, val) {
+          if (err) return sendJSON(res, 500, { error: 'firebase read failed' });
           sendJSON(res, 200, { value: val });
         });
       }
@@ -325,9 +273,9 @@ const server = http.createServer(function (req, res) {
     if (method === 'PUT' && mKey) {
       var k2 = mKey[1];
       return readBody(req, function (body) {
-        if (USE_SHEETS) {
-          return sheetsSet(k2, body, function (err) {
-            if (err) return sendJSON(res, 500, { error: 'sheets write failed' });
+        if (USE_FIREBASE) {
+          return firebaseSet(k2, body, function (err) {
+            if (err) return sendJSON(res, 500, { error: 'firebase write failed' });
             sendJSON(res, 200, { ok: true });
           });
         }
@@ -339,9 +287,9 @@ const server = http.createServer(function (req, res) {
 
     if (method === 'DELETE' && mKey) {
       var k3 = mKey[1];
-      if (USE_SHEETS) {
-        return sheetsDelete(k3, function (err) {
-          if (err) return sendJSON(res, 500, { error: 'sheets delete failed' });
+      if (USE_FIREBASE) {
+        return firebaseDelete(k3, function (err) {
+          if (err) return sendJSON(res, 500, { error: 'firebase delete failed' });
           sendJSON(res, 200, { ok: true });
         });
       }
@@ -359,5 +307,5 @@ const server = http.createServer(function (req, res) {
 
 server.listen(PORT, function () {
   console.log('StockPilot server running at http://0.0.0.0:' + PORT);
-  console.log('Storage: ' + (USE_SHEETS ? 'Google Sheets (' + SHEETS_ID + ')' : 'local file'));
+  console.log('Storage: ' + (USE_FIREBASE ? 'Firebase Realtime Database' : 'local file'));
 });

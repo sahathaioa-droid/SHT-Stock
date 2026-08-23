@@ -27,8 +27,14 @@ var RecommendPage = {
       supSeen[r.supplierName || 'ซัพพลายเออร์อื่น'] = true;
       catSeen[r.category || 'อื่นๆ'] = true;
     });
+    var allCats = DB.all('categories');
+    allCats.forEach(function (c) { catSeen[c.name] = true; });
     var supOpts = Object.keys(supSeen).sort().map(function (n) { return '<option value="' + UI.esc(n) + '">' + UI.esc(n) + '</option>'; }).join('');
-    var catOpts = Object.keys(catSeen).sort().map(function (n) { return '<option value="' + UI.esc(n) + '">' + UI.esc(n) + '</option>'; }).join('');
+    var catOpts = Object.keys(catSeen).sort().map(function (n) {
+      var cat = allCats.find(function (c) { return c.name === n; });
+      var gpLabel = cat ? ' (GP ' + UI.fmtPct(cat.gp) + ')' : '';
+      return '<option value="' + UI.esc(n) + '">' + UI.esc(n) + gpLabel + '</option>';
+    }).join('');
 
     container.innerHTML =
       '<div class="page-head"><div><h1>' + UI.esc(PAGE_TITLES.recommend) + '</h1>' +
