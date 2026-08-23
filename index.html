@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>เข้าสู่ระบบ · StockPilot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@300;400;500;600;700&family=Kanit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style2.css">
+</head>
+<body class="login-body">
+
+<div class="login-bg"></div>
+
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="brand-logo lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></div>
+      <div>
+        <div class="login-title">StockPilot</div>
+        <div class="login-sub">ระบบบริหารจัดการสต๊อกสินค้า</div>
+      </div>
+    </div>
+
+    <div class="login-error" id="loginError" hidden></div>
+
+    <form id="loginForm" novalidate>
+      <div class="form-row">
+        <label class="field-label" for="loginUser">ชื่อผู้ใช้</label>
+        <input class="input" id="loginUser" name="username" placeholder="ชื่อผู้ใช้" autocomplete="username" required>
+      </div>
+      <div class="form-row">
+        <label class="field-label" for="loginPass">รหัสผ่าน</label>
+        <input class="input" id="loginPass" name="password" type="password" placeholder="รหัสผ่าน" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary btn-block btn-lg" id="loginBtn">เข้าสู่ระบบ</button>
+    </form>
+  </div>
+  <div class="login-foot">StockPilot v1.0.0 · รองรับการใช้งานบนคอมพิวเตอร์ แท็บเล็ต และมือถือ</div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/remote.js"></script>
+<script src="js/db.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/auth.js"></script>
+<script>
+(function () {
+  DB.seedDemoData(false);
+
+  var form = document.getElementById('loginForm');
+  var userInput = document.getElementById('loginUser');
+  var passInput = document.getElementById('loginPass');
+  var errBox = document.getElementById('loginError');
+  var btn = document.getElementById('loginBtn');
+
+  function doLogin(username, password) {
+    username = (username || '').trim();
+    if (!username || !password) {
+      showError('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน');
+      return;
+    }
+    errBox.hidden = true;
+    UI.disableBtn(btn);
+    setTimeout(function () {
+      var res = Auth.attemptLogin(username, password);
+      if (res.ok) {
+        window.location.href = 'app.html';
+      } else {
+        showError(res.error);
+        UI.enableBtn(btn);
+        passInput.value = '';
+        passInput.focus();
+      }
+    }, 60);
+  }
+
+  function showError(msg) {
+    errBox.hidden = false;
+    errBox.textContent = msg;
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    doLogin(userInput.value, passInput.value);
+  });
+})();
+</script>
+</body>
+</html>
